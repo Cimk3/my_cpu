@@ -3,6 +3,8 @@
 module ID_stage(
     input  wire        clk,
     input  wire        reset,
+    output wire bp_update, bp_branch, bp_taken,
+    output wire [31:0] bp_pc, bp_target,
     input wire flush, has_int,
     input wire es_occupied, ms_occupied, ws_occupied,
     input wire es_serial, ms_serial, ws_serial,
@@ -334,7 +336,7 @@ regfile u_regfile(
 assign rj_eq_rd  = (rj_value == rkd_value);
 assign rj_lt_rd  = $signed(rj_value) < $signed(rkd_value);
 assign rj_ltu_rd = rj_value < rkd_value;
-assign br_taken  = (inst_beq && rj_eq_rd ||
+assign bp_taken = (inst_beq && rj_eq_rd ||
                     inst_bne && !rj_eq_rd ||
                     inst_blt && rj_lt_rd ||
                     inst_bge && !rj_lt_rd ||
@@ -342,16 +344,25 @@ assign br_taken  = (inst_beq && rj_eq_rd ||
                     inst_bgeu && !rj_ltu_rd ||
                     inst_jirl ||
                     inst_bl ||
-                    inst_b) && ds_valid && ds_ready_go && es_allowin && !ds_ex && !flush;
+                    inst_b);
+assign bp_branch=inst_beq || inst_bne || inst_blt || inst_bge || inst_bltu ||
+                 inst_bgeu || inst_jirl || inst_bl || inst_b;
+assign bp_update=ds_valid && ds_ready_go && es_allowin && !ds_ex && !flush;
+assign bp_pc=ds_pc;
+assign bp_target=br_target;
+wire [31:0] ds_predicted_next;
+wire [31:0] actual_next=bp_taken ? br_target : ds_pc+32'd4;
+// Only mispredictions discard the speculative fetch. Correct predictions keep it.
+assign br_taken=bp_update && actual_next!=ds_predicted_next;
 
 assign br_target = (inst_beq || inst_bne || inst_blt || inst_bge ||
                     inst_bltu || inst_bgeu || inst_bl || inst_b) ?
                    (ds_pc + br_offs) : (rj_value + jirl_offs);
-assign br_bus = {br_taken, br_target};
+assign br_bus = {br_taken, actual_next};
 
 reg [`FS_TO_DS_BUS_WD-1:0] fs_to_ds_bus_r;
 
-assign {ds_inst, ds_pc} = fs_to_ds_bus_r;
+assign {ds_predicted_next, ds_inst, ds_pc} = fs_to_ds_bus_r;
 
 assign {rf_we, rf_waddr, rf_wdata} = ws_to_rf_bus;
 
@@ -459,8 +470,7 @@ always @(posedge clk) begin
         //fs_to_ds_bus_r <= {`FS_TO_DS_BUS_WD{1'b0}};
     end
     else begin
-        // 分支在 ID 级确定。此时 FS 中仍保存顺序地址的一条指令，
-        // 不能在本拍将它写入 DS，否则会在跳转目标前错误执行。
+        // Resolve against the next PC recorded by IF; squash only on mismatch.
         if (br_taken) begin
             ds_valid <= 1'b0;
         end

@@ -1,8 +1,10 @@
 `include "mycpu_head.v"
 
-module IF_stage(
+module IF_stage #(parameter ENABLE_BP=1)(
     input  wire        clk,
     input  wire        reset,
+    input wire bp_update, bp_branch, bp_taken,
+    input wire [31:0] bp_pc, bp_target,
     input wire flush,
     input wire [31:0] redirect_pc,
     input  wire        ds_allowin,
@@ -33,11 +35,17 @@ assign {br_taken, br_target} = br_bus;
 wire [31:0] fs_inst;
 reg  [31:0] fs_pc;
 
-assign fs_to_ds_bus = {fs_inst, fs_pc};
+wire [31:0] predicted_next;
+wire [31:0] bp_next;
+branch_predictor u_predictor(.clk(clk),.reset(reset),.query_pc(fs_pc),
+    .predicted_next(bp_next),.update(bp_update && ENABLE_BP),.is_branch(bp_branch),
+    .taken(bp_taken),.update_pc(bp_pc),.target(bp_target));
+assign predicted_next=ENABLE_BP ? bp_next : seq_pc;
+assign fs_to_ds_bus = {predicted_next, fs_inst, fs_pc};
 
 assign to_fs_valid = ~reset;
 assign seq_pc      = fs_pc + 32'h4;
-assign next_pc     = flush ? redirect_pc : br_taken ? br_target : seq_pc;
+assign next_pc     = flush ? redirect_pc : br_taken ? br_target : predicted_next;
 //握手
 assign fs_ready_go    = 1'b1;
 assign fs_allowin     = flush || !fs_valid || (fs_ready_go && ds_allowin);
